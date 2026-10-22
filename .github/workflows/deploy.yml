@@ -74,7 +74,10 @@ jobs:
           PORT=${PORT:-52070}
           USER_=${USER_:-dataminers}
           DEST=${DEST:-/srv/ganf/current/}
-          rsync -avz --delete \
+          # Sin -a: el usuario de deploy no es dueno del docroot (es hermes:ganf
+          # con setgid de grupo), asi que preservar dueno/tiempos/permisos falla
+          # con "failed to set times ... Operation not permitted" (code 23).
+          rsync -rlz --delete --omit-dir-times --no-perms \
             --exclude '.git' --exclude '.github' --exclude 'setup.sql' --exclude 'upgrade_sgrsi.sql' \
             -e "ssh -p $PORT" ./ "$USER_@$HOST:$DEST"
 
