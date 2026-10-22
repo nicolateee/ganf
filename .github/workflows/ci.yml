@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Sintaxis PHP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_mysql
+          coverage: none
+
+      - name: php -l en todos los archivos
+        run: |
+          fail=0
+          while IFS= read -r -d '' f; do
+            php -l "$f" || fail=1
+          done < <(find . -name '*.php' -not -path './.git/*' -print0)
+          exit $fail
+
+  smoke:
+    name: API contra MariaDB real
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: '1'
+          MARIADB_DATABASE: sgrsi_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    env:
+      SGRSI_DB_HOST: 127.0.0.1
+      SGRSI_DB_NAME: sgrsi_db
+      SGRSI_DB_USER: root
+      SGRSI_DB_PASS: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_mysql
+          coverage: none
+
+      - name: Importar el schema
+        run: |
+          sudo apt-get install -y -qq mariadb-client
+          mysql -h 127.0.0.1 -u root < setup.sql
+          echo "Tablas:"
+          mysql -h 127.0.0.1 -u root -N -e "SHOW TABLES IN sgrsi_db"
+
+      - name: Levantar el servidor embebido de PHP
+        run: |
+          php -S 127.0.0.1:8080 -t . > /tmp/php-server.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://127.0.0.1:8080/index.html && break
+            sleep 0.5
+          done
+
+      - name: Smoke test de la API
+        run: |
+          set -e
+          echo "--- sesion (sin login) ---"
+          code=$(curl -s -o /tmp/resp.json -w '%{http_code}' 'http://127.0.0.1:8080/api/auth.php?accion=sesion')
+          cat /tmp/resp.json; echo
+          test "$code" = "200"
+          grep -q '"status"' /tmp/resp.json
+
+          echo "--- registro + login ---"
+          correo="ci-$(date +%s)@test.local"
+          curl -s -X POST 'http://127.0.0.1:8080/api/auth.php?accion=registro' \
+            -d "correo=$correo&clave=Test1234&nombre=CI" ; echo
+          curl -s -X POST 'http://127.0.0.1:8080/api/auth.php?accion=login' \
+            -d "correo=$correo&clave=Test1234" | tee /tmp/login.json; echo
+          grep -q '"status":"ok"' /tmp/login.json
+
+      - name: Logs del servidor si algo falló
+        if: failure()
+        run: cat /tmp/php-server.log

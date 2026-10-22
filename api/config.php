@@ -18,10 +18,12 @@ class Database
     public static function obtenerConexion(): PDO
     {
         if (self::$conexion === null) {
-            $host    = 'localhost';
-            $db      = 'sgrsi_db';
-            $user    = 'root';
-            $pass    = '';
+            // Credenciales: variables de entorno si existen (CI, servidor),
+            // si no los valores por defecto de XAMPP.
+            $host    = getenv('SGRSI_DB_HOST') ?: 'localhost';
+            $db      = getenv('SGRSI_DB_NAME') ?: 'sgrsi_db';
+            $user    = getenv('SGRSI_DB_USER') ?: 'root';
+            $pass    = getenv('SGRSI_DB_PASS') ?: '';
             $charset = 'utf8mb4';
 
             $dsn = "mysql:host={$host};dbname={$db};charset={$charset}";

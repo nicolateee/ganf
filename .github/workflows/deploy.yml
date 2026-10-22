@@ -1,0 +1,72 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy al VPS
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sin los secrets cargados el job termina limpio en vez de fallar en rojo.
+      # Cargarlos requiere permiso de admin en el repo.
+      - name: Verificar credenciales
+        id: creds
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::notice::VPS_SSH_KEY no esta configurado; se saltea el deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Preparar SSH
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          PORT=${PORT:-52070}
+          ssh-keyscan -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: rsync al servidor
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_: ${{ secrets.VPS_USER }}
+          PORT: ${{ secrets.VPS_PORT }}
+          DEST: ${{ secrets.VPS_PATH }}
+        run: |
+          PORT=${PORT:-52070}
+          USER_=${USER_:-dataminers}
+          DEST=${DEST:-/srv/dataminers/site/}
+          rsync -avz --delete \
+            --exclude '.git' --exclude '.github' --exclude 'setup.sql' --exclude 'upgrade_sgrsi.sql' \
+            -e "ssh -p $PORT" ./ "$USER_@$HOST:$DEST"
+
+      - name: Resumen
+        run: |
+          if [ "${{ steps.creds.outputs.ready }}" = "true" ]; then
+            echo "### Deploy publicado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Commit \`${{ github.event.workflow_run.head_sha }}\` copiado al VPS." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Deploy salteado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Faltan los secrets \`VPS_SSH_KEY\`, \`VPS_HOST\`, \`VPS_USER\`, \`VPS_PORT\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
