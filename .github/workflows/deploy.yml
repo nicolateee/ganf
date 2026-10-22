@@ -61,12 +61,36 @@ jobs:
             --exclude '.git' --exclude '.github' --exclude 'setup.sql' --exclude 'upgrade_sgrsi.sql' \
             -e "ssh -p $PORT" ./ "$USER_@$HOST:$DEST"
 
+      # Verificacion desde la nube: el sitio tiene que responder y la API
+      # tiene que llegar a la base (401 "No hay sesion activa" = app OK,
+      # 500 = no conecta a MariaDB). Si esto falla, el deploy NO esta sano.
+      - name: Verificar el deploy desde la nube
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          SITE_USER: ${{ secrets.SITE_USER }}
+          SITE_PASS: ${{ secrets.SITE_PASS }}
+        run: |
+          set -e
+          URL=${SITE_URL:-http://167.114.2.210:8080}
+          echo "Verificando $URL"
+
+          home=$(curl -s -o /dev/null -w '%{http_code}' -u "$SITE_USER:$SITE_PASS" --max-time 15 "$URL/")
+          echo "GET /            -> $home"
+          [ "$home" = "200" ]
+
+          api=$(curl -s -o /tmp/api.json -w '%{http_code}' -u "$SITE_USER:$SITE_PASS" --max-time 15 "$URL/api/auth.php?accion=sesion")
+          cat /tmp/api.json; echo
+          echo "GET /api/sesion  -> $api"
+          [ "$api" = "401" ] || [ "$api" = "200" ]
+          grep -q '"status"' /tmp/api.json
+
       - name: Resumen
         run: |
           if [ "${{ steps.creds.outputs.ready }}" = "true" ]; then
-            echo "### Deploy publicado" >> "$GITHUB_STEP_SUMMARY"
-            echo "Commit \`${{ github.event.workflow_run.head_sha }}\` copiado al VPS." >> "$GITHUB_STEP_SUMMARY"
+            echo "### Deploy publicado y verificado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Commit \`${{ github.event.workflow_run.head_sha }}\` copiado al VPS y comprobado desde la nube." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Deploy salteado" >> "$GITHUB_STEP_SUMMARY"
-            echo "Faltan los secrets \`VPS_SSH_KEY\`, \`VPS_HOST\`, \`VPS_USER\`, \`VPS_PORT\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "Faltan los secrets \`VPS_SSH_KEY\`, \`VPS_HOST\`, \`VPS_USER\`, \`VPS_PORT\`, \`SITE_URL\`, \`SITE_USER\`, \`SITE_PASS\`." >> "$GITHUB_STEP_SUMMARY"
           fi
