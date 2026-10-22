@@ -78,19 +78,38 @@ jobs:
       - name: Smoke test de la API
         run: |
           set -e
-          echo "--- sesion (sin login) ---"
-          code=$(curl -s -o /tmp/resp.json -w '%{http_code}' 'http://127.0.0.1:8080/api/auth.php?accion=sesion')
-          cat /tmp/resp.json; echo
-          test "$code" = "200"
-          grep -q '"status"' /tmp/resp.json
+          B='http://127.0.0.1:8080/api/auth.php'
 
-          echo "--- registro + login ---"
+          echo "--- sesion sin login: espera 401 ---"
+          code=$(curl -s -o /tmp/r.json -w '%{http_code}' "$B?accion=sesion")
+          cat /tmp/r.json; echo
+          [ "$code" = "401" ]
+          grep -q '"status":"error"' /tmp/r.json
+
+          echo "--- registro: espera 201 ---"
           correo="ci-$(date +%s)@test.local"
-          curl -s -X POST 'http://127.0.0.1:8080/api/auth.php?accion=registro' \
-            -d "correo=$correo&clave=Test1234&nombre=CI" ; echo
-          curl -s -X POST 'http://127.0.0.1:8080/api/auth.php?accion=login' \
-            -d "correo=$correo&clave=Test1234" | tee /tmp/login.json; echo
-          grep -q '"status":"ok"' /tmp/login.json
+          code=$(curl -s -o /tmp/reg.json -w '%{http_code}' -X POST "$B?accion=registro" \
+            -d "nombre=CI" -d "correo=$correo" -d "clave=Test1234")
+          cat /tmp/reg.json; echo
+          [ "$code" = "201" ]
+          grep -q '"status":"exito"' /tmp/reg.json
+
+          echo "--- login correcto: espera 200 ---"
+          code=$(curl -s -o /tmp/login.json -w '%{http_code}' -X POST "$B?accion=login" \
+            -d "correo=$correo" -d "clave=Test1234")
+          cat /tmp/login.json; echo
+          [ "$code" = "200" ]
+          grep -q '"status":"exito"' /tmp/login.json
+
+          echo "--- login con clave incorrecta: espera 401 ---"
+          code=$(curl -s -o /tmp/bad.json -w '%{http_code}' -X POST "$B?accion=login" \
+            -d "correo=$correo" -d "clave=ClaveIncorrecta")
+          cat /tmp/bad.json; echo
+          [ "$code" = "401" ]
+          grep -q '"status":"error"' /tmp/bad.json
+
+          echo "--- usuario persistido en la base ---"
+          mysql -h 127.0.0.1 -u root -N -e "SELECT correo, rol FROM sgrsi_db.usuarios WHERE correo='$correo'"
 
       - name: Logs del servidor si algo falló
         if: failure()
