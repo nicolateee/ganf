@@ -1,0 +1,96 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy al VPS
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sin los secrets cargados el job termina limpio en vez de fallar en rojo.
+      # Cargarlos requiere permiso de admin en el repo.
+      - name: Verificar credenciales
+        id: creds
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::notice::VPS_SSH_KEY no esta configurado; se saltea el deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Preparar SSH
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          KEY: ${{ secrets.VPS_SSH_KEY }}
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          PORT=${PORT:-52070}
+          ssh-keyscan -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: rsync al servidor
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          USER_: ${{ secrets.VPS_USER }}
+          PORT: ${{ secrets.VPS_PORT }}
+          DEST: ${{ secrets.VPS_PATH }}
+        run: |
+          PORT=${PORT:-52070}
+          USER_=${USER_:-dataminers}
+          DEST=${DEST:-/srv/dataminers/site/}
+          rsync -avz --delete \
+            --exclude '.git' --exclude '.github' --exclude 'setup.sql' --exclude 'upgrade_sgrsi.sql' \
+            -e "ssh -p $PORT" ./ "$USER_@$HOST:$DEST"
+
+      # Verificacion desde la nube: el sitio tiene que responder y la API
+      # tiene que llegar a la base (401 "No hay sesion activa" = app OK,
+      # 500 = no conecta a MariaDB). Si esto falla, el deploy NO esta sano.
+      - name: Verificar el deploy desde la nube
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          SITE_USER: ${{ secrets.SITE_USER }}
+          SITE_PASS: ${{ secrets.SITE_PASS }}
+        run: |
+          set -e
+          URL=${SITE_URL:-http://167.114.2.210:8080}
+          echo "Verificando $URL"
+
+          home=$(curl -s -o /dev/null -w '%{http_code}' -u "$SITE_USER:$SITE_PASS" --max-time 15 "$URL/")
+          echo "GET /            -> $home"
+          [ "$home" = "200" ]
+
+          api=$(curl -s -o /tmp/api.json -w '%{http_code}' -u "$SITE_USER:$SITE_PASS" --max-time 15 "$URL/api/auth.php?accion=sesion")
+          cat /tmp/api.json; echo
+          echo "GET /api/sesion  -> $api"
+          [ "$api" = "401" ] || [ "$api" = "200" ]
+          grep -q '"status"' /tmp/api.json
+
+      - name: Resumen
+        run: |
+          if [ "${{ steps.creds.outputs.ready }}" = "true" ]; then
+            echo "### Deploy publicado y verificado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Commit \`${{ github.event.workflow_run.head_sha }}\` copiado al VPS y comprobado desde la nube." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Deploy salteado" >> "$GITHUB_STEP_SUMMARY"
+            echo "Faltan los secrets \`VPS_SSH_KEY\`, \`VPS_HOST\`, \`VPS_USER\`, \`VPS_PORT\`, \`SITE_URL\`, \`SITE_USER\`, \`SITE_PASS\`." >> "$GITHUB_STEP_SUMMARY"
+          fi

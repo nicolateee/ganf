@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Sintaxis PHP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_mysql
+          coverage: none
+
+      - name: php -l en todos los archivos
+        run: |
+          fail=0
+          while IFS= read -r -d '' f; do
+            php -l "$f" || fail=1
+          done < <(find . -name '*.php' -not -path './.git/*' -print0)
+          exit $fail
+
+  smoke:
+    name: API contra MariaDB real
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: '1'
+          MARIADB_DATABASE: sgrsi_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    env:
+      SGRSI_DB_HOST: 127.0.0.1
+      SGRSI_DB_NAME: sgrsi_db
+      SGRSI_DB_USER: root
+      SGRSI_DB_PASS: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_mysql
+          coverage: none
+
+      - name: Importar el schema
+        run: |
+          sudo apt-get install -y -qq mariadb-client
+          mysql -h 127.0.0.1 -u root < setup.sql
+          echo "Tablas:"
+          mysql -h 127.0.0.1 -u root -N -e "SHOW TABLES IN sgrsi_db"
+
+      - name: Levantar el servidor embebido de PHP
+        run: |
+          php -S 127.0.0.1:8080 -t . > /tmp/php-server.log 2>&1 &
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://127.0.0.1:8080/index.html && break
+            sleep 0.5
+          done
+
+      - name: Smoke test de la API
+        run: |
+          set -e
+          B='http://127.0.0.1:8080/api/auth.php'
+
+          echo "--- sesion sin login: espera 401 ---"
+          code=$(curl -s -o /tmp/r.json -w '%{http_code}' "$B?accion=sesion")
+          cat /tmp/r.json; echo
+          [ "$code" = "401" ]
+          grep -q '"status":"error"' /tmp/r.json
+
+          echo "--- registro: espera 201 ---"
+          correo="ci-$(date +%s)@test.local"
+          code=$(curl -s -o /tmp/reg.json -w '%{http_code}' -X POST "$B?accion=registro" \
+            -d "nombre=CI" -d "correo=$correo" -d "clave=Test1234")
+          cat /tmp/reg.json; echo
+          [ "$code" = "201" ]
+          grep -q '"status":"exito"' /tmp/reg.json
+
+          echo "--- login correcto: espera 200 ---"
+          code=$(curl -s -o /tmp/login.json -w '%{http_code}' -X POST "$B?accion=login" \
+            -d "correo=$correo" -d "clave=Test1234")
+          cat /tmp/login.json; echo
+          [ "$code" = "200" ]
+          grep -q '"status":"exito"' /tmp/login.json
+
+          echo "--- login con clave incorrecta: espera 401 ---"
+          code=$(curl -s -o /tmp/bad.json -w '%{http_code}' -X POST "$B?accion=login" \
+            -d "correo=$correo" -d "clave=ClaveIncorrecta")
+          cat /tmp/bad.json; echo
+          [ "$code" = "401" ]
+          grep -q '"status":"error"' /tmp/bad.json
+
+          echo "--- usuario persistido en la base ---"
+          mysql -h 127.0.0.1 -u root -N -e "SELECT correo, rol FROM sgrsi_db.usuarios WHERE correo='$correo'"
+
+      - name: Logs del servidor si algo falló
+        if: failure()
+        run: cat /tmp/php-server.log
