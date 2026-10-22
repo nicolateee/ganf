@@ -56,7 +56,7 @@ jobs:
         run: |
           PORT=${PORT:-52070}
           USER_=${USER_:-dataminers}
-          DEST=${DEST:-/srv/dataminers/site/}
+          DEST=${DEST:-/srv/ganf/current/}
           rsync -avz --delete \
             --exclude '.git' --exclude '.github' --exclude 'setup.sql' --exclude 'upgrade_sgrsi.sql' \
             -e "ssh -p $PORT" ./ "$USER_@$HOST:$DEST"
@@ -72,7 +72,7 @@ jobs:
           SITE_PASS: ${{ secrets.SITE_PASS }}
         run: |
           set -e
-          URL=${SITE_URL:-http://167.114.2.210:8080}
+          URL=${SITE_URL:-https://ganf.dataminers.lat}
           echo "Verificando $URL"
 
           home=$(curl -s -o /dev/null -w '%{http_code}' -u "$SITE_USER:$SITE_PASS" --max-time 15 "$URL/")
