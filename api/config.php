@@ -36,9 +36,13 @@ class Database
             try {
                 self::$conexion = new PDO($dsn, $user, $pass, $opciones);
             } catch (PDOException $e) {
+                // El detalle va al log del servidor, no al cliente: el mensaje del driver
+                // trae host, puerto, usuario y el DSN completo (con eso se mapea la red
+                // interna y se afina un ataque). Al cliente, un mensaje genérico.
+                error_log('SGRSI: no se pudo conectar a la base de datos: ' . $e->getMessage());
                 // responder() llama exit(), pero lo re-lanzamos también
                 // para evitar que PHP intente continuar con $conexion = null
-                responder('error', 'Error de conexión a la base de datos: ' . $e->getMessage(), null, 500);
+                responder('error', 'Error de conexión a la base de datos', null, 500);
                 exit; // seguridad extra
             }
         }
